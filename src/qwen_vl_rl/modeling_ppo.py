@@ -21,15 +21,16 @@ def build_quantization_config(model_config) -> BitsAndBytesConfig | None:
     return build_quantization_config_from_fields(model_config)
 
 
-# 为 PPO 训练设计的策略网络包装类
-# 它将语言模型（作为策略网络 Actor）与一个价值头（Value Head） 组合在一起，用于估计状态价值函数
+# 为 PPO 训练设计的共享骨干 actor-critic 包装类。
+# policy_model 是 actor：用 Qwen-VL 的 LM head 输出 token logits / logprobs，并负责生成回复。
+# value_head 是 critic：接在同一个 policy_model 的最后一层 hidden states 后面，
+# 估计每个 token 位置对应的状态价值 V(s)，而不是动作价值 Q(s, a)。
 class PPOPolicyWithValueHead(nn.Module):
     def __init__(self, policy_model: nn.Module, value_head_dropout: float = 0.0):
         super().__init__()
 
-        # 原始语言模型（可以是基础模型或经过 LoRA 微调的模型），负责生成 logits 和隐藏状态：
-        # 这里 logits 是原始模型输出的隐藏状态经过 LM head（通常是线性层） 输出的结果，用于计算 Token 预测概率；
-        # 这里提取出隐藏状态是用于估算每一个 Token 位的状态价值（value head）
+        # 原始语言模型（可以是基础模型或经过 LoRA 微调的模型）负责生成 logits 和 hidden states。
+        # logits 用于 actor 的 token 概率，hidden states 会交给 critic 的 value head 估计 V(s)。
         self.policy_model = policy_model
 
         hidden_size = _get_hidden_size(policy_model.config)
@@ -38,7 +39,7 @@ class PPOPolicyWithValueHead(nn.Module):
         # 在价值头之前添加 dropout 用于正则化
         self.value_dropout = nn.Dropout(value_head_dropout)
 
-        # 一个线性层，将隐藏状态映射到价值
+        # 一个线性层，将 hidden states 映射到状态价值 V(s)
         self.value_head = nn.Linear(hidden_size, 1, dtype=value_dtype)
 
         nn.init.normal_(self.value_head.weight, mean=0.0, std=0.02)
@@ -54,7 +55,7 @@ class PPOPolicyWithValueHead(nn.Module):
     def forward(self, **kwargs):
         return self.policy_model(**kwargs)
 
-    def compute_value_from_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def compute_state_values_from_hidden_states(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.value_head(self.value_dropout(hidden_states)).squeeze(-1)
 
     def evaluate_actions(self, input_ids: torch.Tensor, **model_kwargs) -> dict[str, torch.Tensor]:
@@ -162,7 +163,7 @@ def compute_policy_outputs_from_model_outputs(
 ) -> dict[str, torch.Tensor]:
     logits = outputs.logits[:, :-1, :]
     hidden_states = outputs.hidden_states[-1][:, :-1, :]
-    values = model_wrapper.compute_value_from_hidden_states(hidden_states)
+    values = model_wrapper.compute_state_values_from_hidden_states(hidden_states)
     target_tokens = input_ids[:, 1:]
     logprobs = gather_log_probs(logits, target_tokens)
     entropy = categorical_entropy_from_logits(logits)

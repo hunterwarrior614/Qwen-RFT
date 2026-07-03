@@ -96,11 +96,13 @@ def generate_rollout_batch(
     accelerator,
     eval_mode: bool = False,
 ) -> RolloutBatch:
+    # 1. 将 collator 准备好的图文 prompt 输入搬到当前训练设备。
     prompt_inputs = move_tensors_to_device(batch['prompt_inputs'], accelerator.device)
     prompt_attention_mask = prompt_inputs['attention_mask']
     prompt_padded_length = prompt_inputs['input_ids'].shape[1]
     visual_patch_counts = prompt_inputs['image_grid_thw'].prod(dim=1)
 
+    # 2. 配置当前 policy 的自回归生成参数。训练时按配置采样，评估时固定为 greedy。
     generation_kwargs = {
         'input_ids': prompt_inputs['input_ids'],
         'attention_mask': prompt_attention_mask,
@@ -126,8 +128,8 @@ def generate_rollout_batch(
     if not eval_mode and generation_config.top_k and generation_config.top_k > 0:
         generation_kwargs['top_k'] = generation_config.top_k
 
-    unwrapped_policy = accelerator.unwrap_model(policy)
-
+    # 3. 解开 Accelerate/DDP 包装，使用当前 policy 采样 response token。
+    unwrapped_policy = accelerator.unwrap_model(policy)    
     # 布尔属性 training，保存当前模型（policy）的训练模式状态，
     # 确保模型在生成 rollout 数据后，能够恢复到正确的模式继续后续的 PPO 训练
     policy_was_training = unwrapped_policy.training
@@ -135,6 +137,8 @@ def generate_rollout_batch(
     unwrapped_policy.eval()
     sequences = unwrapped_policy.generate(**generation_kwargs).sequences
 
+    # 4. 根据 EOS 截断有效 response 区域，并构造完整序列的 attention mask。
+    # PPO loss 只作用在 shifted_response_mask 标记出的 response token 上。
     eos_token_ids = _normalize_eos_ids(processor.tokenizer.eos_token_id)
     response_attention_mask = build_response_attention_mask(sequences[:, prompt_padded_length:], eos_token_ids)
     full_attention_mask = torch.cat([prompt_attention_mask, response_attention_mask], dim=1)
@@ -149,10 +153,13 @@ def generate_rollout_batch(
         'image_grid_thw': prompt_inputs['image_grid_thw'],
     }
 
+    # 5. 对刚采样到的固定序列做 teacher-forcing 前向，记录旧策略的 logprob 和 V(s)。
+    # 这里不会再次采样；这些 old_* 值是后续 PPO ratio、value clipping 和 GAE 的基准。
     old_policy_outputs = unwrapped_policy.evaluate_actions(sequences, **model_inputs)
     if policy_was_training:
         unwrapped_policy.train()
 
+    # 6. 用冻结参考模型评估同一条序列，得到 KL 惩罚所需的参考 logprob。
     ref_outputs = reference_model(
         input_ids=sequences,
         output_hidden_states=False,
@@ -162,6 +169,7 @@ def generate_rollout_batch(
     )
     ref_logprobs = gather_log_probs(ref_outputs.logits[:, :-1, :], sequences[:, 1:])
 
+    # 7. 解码 response，并按多选题答案规则计算每条样本的环境奖励。
     response_texts = decode_response_texts(
         processor=processor,
         sequences=sequences,
@@ -176,6 +184,8 @@ def generate_rollout_batch(
     ref_logprobs = ref_logprobs
     shifted_response_mask = response_mask[:, 1:]
 
+    # 8. 构造 token-level reward：每个 response token 承担 KL 惩罚，
+    # 最后一个有效 response token 额外接收任务 reward。
     token_rewards = -ppo_config.kl_coef * (old_logprobs - ref_logprobs)
     token_rewards = token_rewards * shifted_response_mask
     for row_index in range(token_rewards.shape[0]):
@@ -184,6 +194,7 @@ def generate_rollout_batch(
             continue
         token_rewards[row_index, valid_positions[-1]] += scores[row_index]
 
+    # 9. 基于旧价值估计和 token reward 计算 advantage 与 return。
     advantages, returns = compute_gae(
         rewards=token_rewards,
         values=old_values,
@@ -192,6 +203,7 @@ def generate_rollout_batch(
         lam=ppo_config.lam,
     )
 
+    # 10. 将 rollout 中间量搬回 CPU，后续再由 build_minibatch 按需取回设备训练。
     return RolloutBatch(
         sequences=sequences.detach().cpu(),
         full_attention_mask=full_attention_mask.detach().cpu(),

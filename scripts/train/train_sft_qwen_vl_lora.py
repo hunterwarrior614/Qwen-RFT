@@ -241,7 +241,7 @@ def main() -> None:
             metrics_path = output_dir / 'metrics.jsonl'
             metrics_path.write_text('', encoding='utf-8')
     accelerator.wait_for_everyone()
-    # 加载模型
+    # 创建了一个多模态处理器（Processor），专门用于处理视觉语言模型（如 Qwen2.5-VL）的输入
     processor = AutoProcessor.from_pretrained(config['base_model_name_or_path'])
 
     train_dataset, valid_dataset, test_dataset = create_sft_datasets_from_ppo_records(
@@ -267,6 +267,7 @@ def main() -> None:
     )
 
     quantization_config = build_quantization_config(config)
+    # 加载模型
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         config['base_model_name_or_path'],
         dtype=get_torch_dtype(config['torch_dtype']),
