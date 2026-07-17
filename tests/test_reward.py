@@ -1,4 +1,4 @@
-from src.qwen_vl_rl.reward import (
+from qwen_vl_rl.algorithms.reward import (
     extract_choice_letter,
     extract_relaxed_choice_letter,
     score_choice_predictions,
@@ -77,6 +77,7 @@ def test_score_choice_predictions_rewards_correctness_and_penalizes_wrong_option
     )
 
     assert output['pred_letters'] == ['A', 'A', 'A', 'C', 'B', None]
+    assert output['strict_pred_letters'] == ['A', None, None, 'C', None, None]
     assert output['rewards'] == [1.0, 1.0, 1.0, -0.25, -0.25, -0.5]
 
 

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from .answering import (
     extract_answer_tag_content,
+)
+from .answering import (
     extract_choice_letter as _extract_choice_letter,
 )
-
 
 EXPLICIT_CHOICE_PATTERN = re.compile(
     r'\b(?:answer|option|choice)\s*(?:is|:|：)?\s*(?:probably\s+)?([A-Da-d])\b',
@@ -52,13 +53,18 @@ def score_single_prediction(prediction: str, answer_key: str) -> tuple[float, st
 def score_choice_predictions(predictions: Iterable[str], answer_keys: Iterable[str]) -> dict[str, list[float] | list[str | None]]:
     rewards: list[float] = []
     extracted: list[str | None] = []
-    for prediction, answer_key in zip(predictions, answer_keys):
+    strict_extracted: list[str | None] = []
+    for prediction, answer_key in zip(predictions, answer_keys, strict=True):
         reward, pred_letter = score_single_prediction(prediction, answer_key)
         extracted.append(pred_letter)
+        strict_extracted.append(extract_choice_letter(prediction))
         rewards.append(reward)
     return {
         'rewards': rewards,
         'pred_letters': extracted,
+        # Reward 可以使用宽松解析缓解稀疏奖励，但准确率必须遵守提示词规定的
+        # <answer>...</answer> 格式，避免训练指标与最终测试报告口径不一致。
+        'strict_pred_letters': strict_extracted,
     }
 
 
@@ -83,3 +89,4 @@ def _extract_choice_from_short_text(text: str) -> str | None:
     if len(unique_matches) == 1:
         return matches[0]
     return None
+

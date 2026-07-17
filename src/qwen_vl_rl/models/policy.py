@@ -9,7 +9,7 @@ import torch.nn as nn
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from transformers import BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
 
-from .modeling_common import (
+from .common import (
     build_quantization_config_from_fields,
     get_torch_dtype,
     match_module_names,
@@ -216,3 +216,4 @@ def _resolve_lora_target_modules(model: nn.Module, target_regex: str) -> list[st
 
 def _match_module_names(model: nn.Module, target_regex: str) -> list[str]:
     return match_module_names(model, target_regex)
+

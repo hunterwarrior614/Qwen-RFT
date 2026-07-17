@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from src.qwen_vl_rl.modeling_common import (
+from qwen_vl_rl.models.common import (
     build_quantization_config_from_fields,
     get_torch_dtype,
     match_module_names,

@@ -6,10 +6,9 @@ from typing import Any
 
 from torch.utils.data import Dataset
 
-from .collator_utils import (
-    build_processor_inputs,
-    build_processor_inputs_with_padding_side,
+from .collators import (
     build_generation_prompt_texts,
+    build_processor_inputs_with_padding_side,
     collect_prompt_metadata,
     decode_prompt_images,
     prepare_tokenizer_for_padding,
@@ -119,7 +118,7 @@ def create_sft_datasets_from_ppo_records(
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
 ) -> tuple[ThymeVLSFTDataset, ThymeVLSFTDataset, ThymeVLSFTDataset]:
-    from .data import create_split_datasets
+    from .datasets import create_split_datasets
 
     train_ppo, eval_ppo, test_ppo = create_split_datasets(
         jsonl_path=jsonl_path,
@@ -148,3 +147,4 @@ def _convert_records(records) -> list[SFTRecord]:
         )
         for record in records
     ]
+

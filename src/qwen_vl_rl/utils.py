@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import random
 from io import BytesIO
@@ -9,7 +10,6 @@ from typing import Any
 import numpy as np
 import torch
 from PIL import Image
-import base64
 
 
 def set_seed(seed: int) -> None:
@@ -85,11 +85,19 @@ def move_tensors_to_device(batch: dict[str, Any], device: torch.device) -> dict[
 
 
 def extract_first_image_uri(messages: list[dict[str, Any]]) -> str:
+    image_uris = extract_image_uris(messages)
+    return image_uris[0] if image_uris else ''
+
+
+def extract_image_uris(messages: list[dict[str, Any]]) -> list[str]:
+    image_uris: list[str] = []
     for message in messages:
         for item in message.get('content', []):
             if item.get('type') == 'image':
-                return item.get('image', '')
-    return ''
+                image_uri = item.get('image', '')
+                if image_uri:
+                    image_uris.append(image_uri)
+    return image_uris
 
 
 def decode_data_uri_image(image_uri: str) -> Image.Image:
@@ -125,11 +133,14 @@ def decode_first_image_from_messages(
     messages: list[dict[str, Any]],
     image_max_longest_edge: int | None = None,
 ) -> Image.Image:
-    image_uri = extract_first_image_uri(messages)
-    if not image_uri:
-        raise ValueError('No image found in sample messages')
+    image_uris = extract_image_uris(messages)
+    if len(image_uris) != 1:
+        raise ValueError(
+            'QwenVL-RFT currently requires exactly one image per sample; '
+            f'found {len(image_uris)}'
+        )
 
     return resize_image_longest_edge(
-        decode_data_uri_image(image_uri),
+        decode_data_uri_image(image_uris[0]),
         image_max_longest_edge=image_max_longest_edge,
     )

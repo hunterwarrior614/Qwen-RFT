@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-
 RunKind = Literal['auto', 'sft', 'ppo', 'grpo']
 
 
@@ -263,3 +262,4 @@ def _finish_axis(
         ax.legend()
     else:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+

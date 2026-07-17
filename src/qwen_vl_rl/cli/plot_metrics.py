@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
+from qwen_vl_rl.reporting.plotting import render_metrics_curve
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.qwen_vl_rl.plotting import render_metrics_curve
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,3 +60,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+

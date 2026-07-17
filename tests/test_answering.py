@@ -1,4 +1,4 @@
-from src.qwen_vl_rl.answering import (
+from qwen_vl_rl.algorithms.answering import (
     extract_answer_tag_content,
     extract_choice_letter,
     format_choice_answer,

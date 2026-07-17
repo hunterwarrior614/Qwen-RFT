@@ -1,4 +1,4 @@
-from scripts.data_process.convert_thyme_sft_to_qwen_vl_rl import (
+from qwen_vl_rl.cli.convert_thyme import (
     ANSWER_FORMAT_PROMPT,
     build_common_fields,
     build_prompt_question,
@@ -51,3 +51,4 @@ def test_build_common_fields_accepts_plain_choice_letter_source_response():
     assert record['ground_truth'] == 'c'
     assert record['answer_normalized'] == 'C'
     assert record['choice_letter'] == 'C'
+

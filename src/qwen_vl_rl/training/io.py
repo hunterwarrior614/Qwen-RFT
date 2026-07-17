@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
+import random
 import re
 import warnings
+from pathlib import Path
 
+import numpy as np
 
 CHECKPOINT_DIR_PATTERN = re.compile(r'checkpoint-(\d+)$')
 
@@ -20,6 +22,49 @@ def prepare_checkpoint_dir(output_dir: Path, step: int) -> Path:
     checkpoint_dir = output_dir / f'checkpoint-{step}'
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     return checkpoint_dir
+
+
+def initialize_run_files(
+    output_dir: Path,
+    resolved_config: dict,
+    *,
+    resume_checkpoint: str | Path | None,
+    reset_metrics: bool,
+) -> None:
+    """初始化一次 run 的元数据；调用方只应在主进程执行。"""
+    payload = dict(resolved_config)
+    payload['resume_from_checkpoint'] = (
+        str(resume_checkpoint) if resume_checkpoint is not None else None
+    )
+    (output_dir / 'resolved_config.json').write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    if reset_metrics:
+        (output_dir / 'metrics.jsonl').write_text('', encoding='utf-8')
+
+
+def write_dataset_split(
+    output_dir: Path,
+    train_dataset,
+    eval_dataset,
+    test_dataset,
+    split_seed: int,
+) -> None:
+    """写出可复核的数据划分；调用方只应在主进程执行。"""
+    payload = {
+        'train_size': len(train_dataset),
+        'eval_size': len(eval_dataset),
+        'test_size': len(test_dataset),
+        'split_seed': split_seed,
+        'train_ids': [sample['sample_id'] for sample in train_dataset],
+        'eval_ids': [sample['sample_id'] for sample in eval_dataset],
+        'test_ids': [sample['sample_id'] for sample in test_dataset],
+    }
+    (output_dir / 'dataset_split.json').write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
 
 
 def checkpoint_step(checkpoint_dir: str | Path) -> int | None:
@@ -40,6 +85,28 @@ def find_latest_checkpoint(output_dir: str | Path) -> Path | None:
         return None
     candidates.sort(key=lambda item: item[0])
     return candidates[-1][1]
+
+
+def prune_old_checkpoints(output_dir: str | Path, save_total_limit: int) -> list[Path]:
+    """仅删除最旧的合法 checkpoint-N 目录，保留最近的若干个。"""
+    if save_total_limit <= 0:
+        raise ValueError('save_total_limit must be greater than zero')
+
+    candidates: list[tuple[int, Path]] = []
+    for child in Path(output_dir).glob('checkpoint-*'):
+        step = checkpoint_step(child)
+        if step is not None and child.is_dir():
+            candidates.append((step, child))
+    candidates.sort(key=lambda item: item[0])
+
+    removed: list[Path] = []
+    for _, checkpoint_dir in candidates[:-save_total_limit]:
+        # checkpoint_dir 来自 output_dir 的直接子目录，并通过严格名称校验。
+        import shutil
+
+        shutil.rmtree(checkpoint_dir)
+        removed.append(checkpoint_dir)
+    return removed
 
 
 def resolve_resume_checkpoint(
@@ -125,6 +192,15 @@ def save_optimizer_and_training_state(
         json.dumps(training_state, ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
+    torch.save(
+        {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        },
+        checkpoint_dir / 'rng_state.pt',
+    )
 
 
 def load_optimizer_state_if_available(
@@ -137,7 +213,9 @@ def load_optimizer_state_if_available(
     optimizer_path = Path(checkpoint_dir) / 'optimizer.pt'
     if not optimizer_path.exists():
         return False
-    optimizer.load_state_dict(torch.load(optimizer_path, map_location=map_location))
+    optimizer.load_state_dict(
+        torch.load(optimizer_path, map_location=map_location, weights_only=True)
+    )
     return True
 
 
@@ -151,7 +229,27 @@ def load_scheduler_state_if_available(
     scheduler_path = Path(checkpoint_dir) / 'scheduler.pt'
     if not scheduler_path.exists():
         return False
-    scheduler.load_state_dict(torch.load(scheduler_path, map_location=map_location))
+    scheduler.load_state_dict(
+        torch.load(scheduler_path, map_location=map_location, weights_only=True)
+    )
+    return True
+
+
+def load_rng_state_if_available(checkpoint_dir: str | Path) -> bool:
+    """恢复 Python、NumPy、PyTorch RNG，使续训更接近不中断的训练。"""
+    import torch
+
+    state_path = Path(checkpoint_dir) / 'rng_state.pt'
+    if not state_path.exists():
+        return False
+    # RNG 文件由本项目本地 checkpoint 生成，其中含 NumPy 对象，不能使用
+    # weights_only 模式。不要从不可信来源加载训练 checkpoint。
+    state = torch.load(state_path, map_location='cpu', weights_only=False)
+    random.setstate(state['python'])
+    np.random.set_state(state['numpy'])
+    torch.set_rng_state(state['torch'])
+    if torch.cuda.is_available() and state.get('cuda') is not None:
+        torch.cuda.set_rng_state_all(state['cuda'])
     return True
 
 
@@ -219,3 +317,4 @@ def log_metrics(
             if isinstance(value, (int, float)):
                 pieces.append(f'{key}={value:.4f}')
         print(f'[{prefix}] ' + ' '.join(pieces), flush=True)
+

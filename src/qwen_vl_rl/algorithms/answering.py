@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 ANSWER_TAG_PATTERN = re.compile(r'<answer>(.*?)</answer>', re.IGNORECASE | re.DOTALL)
 EXACT_CHOICE_PATTERN = re.compile(r'^\s*([A-Da-d])\s*(?:[\)\].:：、-]\s*)?$')
 
@@ -40,3 +39,4 @@ def format_choice_answer(letter: str, with_answer_tag: bool = True) -> str:
     if with_answer_tag:
         return f'<answer>{normalized}</answer>'
     return normalized
+

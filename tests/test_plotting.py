@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.qwen_vl_rl.plotting import infer_run_kind, load_metric_records, render_metrics_curve
+from qwen_vl_rl.reporting.plotting import infer_run_kind, load_metric_records, render_metrics_curve
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:

@@ -3,53 +3,48 @@
 from __future__ import annotations
 
 import argparse
-import json
+from copy import deepcopy
 from pathlib import Path
-import sys
 
-import matplotlib.pyplot as plt
 import torch
-import yaml
 from accelerate import Accelerator
-from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
     AutoProcessor,
-    Qwen2_5_VLForConditionalGeneration,
     get_cosine_schedule_with_warmup,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.qwen_vl_rl.modeling_common import (
-    build_quantization_config_from_fields,
-    get_torch_dtype,
-    resolve_lora_target_modules,
-)
-from src.qwen_vl_rl.reports import write_test_results_from_loader
-from src.qwen_vl_rl.answering import extract_choice_letter
-from src.qwen_vl_rl.sft import QwenVLSFTCollator, create_sft_datasets_from_ppo_records
-from src.qwen_vl_rl.training_io import (
+from qwen_vl_rl.algorithms.answering import extract_choice_letter
+from qwen_vl_rl.config import load_sft_config
+from qwen_vl_rl.data.sft import QwenVLSFTCollator, create_sft_datasets_from_ppo_records
+from qwen_vl_rl.models.policy import build_lora_policy_backbone
+from qwen_vl_rl.reporting.plotting import render_metrics_curve
+from qwen_vl_rl.reporting.reports import write_test_results_from_loader
+from qwen_vl_rl.training.io import (
     advance_scheduler_to_step,
+    append_metric,
     estimate_total_training_steps,
+    initialize_run_files,
     load_optimizer_state_if_available,
+    load_rng_state_if_available,
     load_scheduler_state_if_available,
     prepare_checkpoint_dir,
+    prune_old_checkpoints,
     resolve_resume_checkpoint,
     resume_step_from_checkpoint,
     save_optimizer_and_training_state,
+    write_dataset_split,
 )
-from src.qwen_vl_rl.utils import (
+from qwen_vl_rl.utils import (
     dump_json,
     ensure_dir,
     move_tensors_to_device,
-    resolve_config_paths_in_dict,
-    resolve_project_path,
+    resolve_object_paths,
     set_seed,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,25 +67,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
-
-
-def load_config(path: str) -> dict:
-    config_path = resolve_project_path(path, PROJECT_ROOT)
-    with open(config_path, 'r', encoding='utf-8') as handle:
-        config = yaml.safe_load(handle)
-    return resolve_config_paths_in_dict(
-        config,
-        PROJECT_ROOT,
-        required_keys=['output_dir', 'base_model_name_or_path', 'train_file'],
-    )
-
-
-def build_quantization_config(config: dict) -> BitsAndBytesConfig | None:
-    return build_quantization_config_from_fields(config)
-
-
-def resolve_lora_targets(model, target_regex: str) -> list[str]:
-    return resolve_lora_target_modules(model, target_regex)
 
 
 @torch.no_grad()
@@ -150,7 +126,15 @@ def evaluate(
     }
 
 
-def save_checkpoint(model, processor, optimizer, scheduler, output_dir: Path, step: int) -> None:
+def save_checkpoint(
+    model,
+    processor,
+    optimizer,
+    scheduler,
+    output_dir: Path,
+    step: int,
+    save_total_limit: int,
+) -> None:
     checkpoint_dir = prepare_checkpoint_dir(output_dir, step)
     model.save_pretrained(checkpoint_dir / 'adapter')
     processor.save_pretrained(checkpoint_dir / 'processor')
@@ -160,66 +144,28 @@ def save_checkpoint(model, processor, optimizer, scheduler, output_dir: Path, st
         training_state={'step': step},
         scheduler=scheduler,
     )
-
-
-def append_metric(output_dir: Path, record: dict) -> None:
-    metrics_path = output_dir / 'metrics.jsonl'
-    with metrics_path.open('a', encoding='utf-8') as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+    prune_old_checkpoints(output_dir, save_total_limit)
 
 
 def render_training_curve(output_dir: Path) -> None:
-    metrics_path = output_dir / 'metrics.jsonl'
-    if not metrics_path.exists():
-        return
-
-    records = []
-    with metrics_path.open('r', encoding='utf-8') as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    if not records:
-        return
-
-    train_steps = [item['step'] for item in records if item['phase'] == 'train']
-    train_losses = [item['loss'] for item in records if item['phase'] == 'train']
-    eval_steps = [item['step'] for item in records if item['phase'] == 'eval']
-    eval_losses = [item['eval_loss'] for item in records if item['phase'] == 'eval']
-    eval_accs = [item['eval_exact_match'] for item in records if item['phase'] == 'eval']
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    axes[0].plot(train_steps, train_losses, label='train_loss', color='#1f77b4', linewidth=2)
-    if eval_steps:
-        axes[0].plot(eval_steps, eval_losses, label='eval_loss', color='#d62728', linewidth=2, marker='o')
-    axes[0].set_title('SFT Loss')
-    axes[0].set_xlabel('Step')
-    axes[0].set_ylabel('Loss')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend()
-
-    if eval_steps:
-        axes[1].plot(eval_steps, eval_accs, label='eval_exact_match', color='#2ca02c', linewidth=2, marker='o')
-    axes[1].set_title('SFT Eval Exact Match')
-    axes[1].set_xlabel('Step')
-    axes[1].set_ylabel('Accuracy')
-    axes[1].set_ylim(0.0, 1.0)
-    axes[1].grid(True, alpha=0.3)
-    if eval_steps:
-        axes[1].legend()
-
-    fig.tight_layout()
-    fig.savefig(output_dir / 'training_curve.png', dpi=160)
-    plt.close(fig)
+    render_metrics_curve(output_dir, kind='sft')
 
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
-    set_seed(config['seed'])
+    config_path = PROJECT_ROOT / args.config if not Path(args.config).is_absolute() else args.config
+    config = load_sft_config(config_path)
+    resolve_object_paths(config.data, PROJECT_ROOT, required_attrs=['train_file'])
+    resolve_object_paths(
+        config.model,
+        PROJECT_ROOT,
+        required_attrs=['base_model_name_or_path'],
+        optional_attrs=['sft_adapter_path'],
+    )
+    resolve_object_paths(config.logging, PROJECT_ROOT, required_attrs=['output_dir'])
+    set_seed(config.seed)
 
-    output_dir = ensure_dir(config['output_dir'])
+    output_dir = ensure_dir(config.logging.output_dir)
     resume_checkpoint = resolve_resume_checkpoint(
         args.resume_from_checkpoint,
         output_dir=output_dir,
@@ -229,113 +175,89 @@ def main() -> None:
     # 每经过 gradient_accumulation_steps 个 mini-batch 才执行一次参数更新，
     # 当显存不足以支持较大的批次时，通过梯度累积来模拟更大的有效批次。
     accelerator = Accelerator(
-        gradient_accumulation_steps=config['gradient_accumulation_steps']
+        gradient_accumulation_steps=config.sft.gradient_accumulation_steps
     )
     if accelerator.is_main_process:
-        resolved_config = dict(config)
-        resolved_config['resume_from_checkpoint'] = (
-            str(resume_checkpoint) if resume_checkpoint is not None else None
+        initialize_run_files(
+            output_dir,
+            config.to_dict(),
+            resume_checkpoint=resume_checkpoint,
+            reset_metrics=resume_checkpoint is None,
         )
-        dump_json(resolved_config, output_dir / 'resolved_config.json')
-        if resume_checkpoint is None:
-            metrics_path = output_dir / 'metrics.jsonl'
-            metrics_path.write_text('', encoding='utf-8')
     accelerator.wait_for_everyone()
     # 创建了一个多模态处理器（Processor），专门用于处理视觉语言模型（如 Qwen2.5-VL）的输入
-    processor = AutoProcessor.from_pretrained(config['base_model_name_or_path'])
+    processor = AutoProcessor.from_pretrained(config.model.base_model_name_or_path)
 
     train_dataset, valid_dataset, test_dataset = create_sft_datasets_from_ppo_records(
-        jsonl_path=config['train_file'],
-        train_size=config['train_size'],
-        eval_size=config['eval_size'],
-        test_size=config['test_size'],
-        split_seed=config['split_seed'],
-        max_train_samples=config.get('max_train_samples'),
-        max_eval_samples=config.get('max_eval_samples'),
+        jsonl_path=config.data.train_file,
+        train_size=config.data.train_size,
+        eval_size=config.data.eval_size,
+        test_size=config.data.test_size,
+        split_seed=config.data.split_seed,
+        max_train_samples=config.data.max_train_samples,
+        max_eval_samples=config.data.max_eval_samples,
     )
-    dump_json(
-        {
-            'train_size': len(train_dataset),
-            'eval_size': len(valid_dataset),
-            'test_size': len(test_dataset),
-            'split_seed': config['split_seed'],
-            'train_ids': [sample['sample_id'] for sample in train_dataset],
-            'eval_ids': [sample['sample_id'] for sample in valid_dataset],
-            'test_ids': [sample['sample_id'] for sample in test_dataset],
-        },
-        output_dir / 'dataset_split.json',
-    )
+    if accelerator.is_main_process:
+        write_dataset_split(
+            output_dir,
+            train_dataset,
+            valid_dataset,
+            test_dataset,
+            config.data.split_seed,
+        )
+    accelerator.wait_for_everyone()
 
-    quantization_config = build_quantization_config(config)
-    # 加载模型
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        config['base_model_name_or_path'],
-        dtype=get_torch_dtype(config['torch_dtype']),
-        attn_implementation=config['attn_implementation'],
-        quantization_config=quantization_config,
-    )
-    if config.get('load_in_4bit', False):
-        model = prepare_model_for_kbit_training(model)
-
+    # SFT、PPO、GRPO 共用同一个 Qwen-VL + LoRA 模型工厂。
+    model_config = deepcopy(config.model)
     if resume_checkpoint is not None:
-        model = PeftModel.from_pretrained(
-            model,
-            resume_checkpoint / 'adapter',
-            is_trainable=True,
-        )
-    else:
-        target_modules = resolve_lora_targets(model, config['lora_target_modules_regex'])
-        peft_config = LoraConfig(
-            r=config['lora_r'],
-            lora_alpha=config['lora_alpha'],
-            lora_dropout=config['lora_dropout'],
-            bias=config['lora_bias'],
-            target_modules=target_modules,
-            task_type='CAUSAL_LM',
-        )
-        model = get_peft_model(model, peft_config)
-    if config.get('gradient_checkpointing', False):
-        model.gradient_checkpointing_enable()
-        model.config.use_cache = False
-        model.enable_input_require_grads()
+        model_config.sft_adapter_path = str(resume_checkpoint / 'adapter')
+    model = build_lora_policy_backbone(model_config, config.lora)
 
     collator = QwenVLSFTCollator(
         processor,
-        image_max_longest_edge=config.get('image_max_longest_edge'),
+        image_max_longest_edge=config.data.image_max_longest_edge,
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['per_device_train_batch_size'],
+        batch_size=config.sft.per_device_train_batch_size,
         shuffle=True,
         collate_fn=collator,
+        num_workers=config.data.num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
     valid_loader = DataLoader(
         valid_dataset,
-        batch_size=config['per_device_eval_batch_size'],
+        batch_size=config.sft.per_device_eval_batch_size,
         shuffle=False,
         collate_fn=collator,
+        num_workers=config.data.num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config['per_device_eval_batch_size'],
+        batch_size=config.sft.per_device_eval_batch_size,
         shuffle=False,
         collate_fn=collator,
+        num_workers=config.data.num_workers,
+        pin_memory=torch.cuda.is_available(),
     )
 
     optimizer = AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
-        lr=config['learning_rate'],
-        weight_decay=config['weight_decay'],
+        lr=config.optimizer.learning_rate,
+        betas=(config.optimizer.adam_beta1, config.optimizer.adam_beta2),
+        eps=config.optimizer.adam_epsilon,
+        weight_decay=config.optimizer.weight_decay,
     )
 
     total_steps = estimate_total_training_steps(
         num_batches=len(train_loader),
-        num_train_epochs=config['num_train_epochs'],
+        num_train_epochs=config.num_train_epochs,
         num_processes=accelerator.num_processes,
-        gradient_accumulation_steps=config['gradient_accumulation_steps'],
+        gradient_accumulation_steps=config.sft.gradient_accumulation_steps,
         max_steps=args.max_steps,
     )
-    warmup_steps = max(1, int(total_steps * config['warmup_ratio']))
+    warmup_steps = max(1, int(total_steps * config.sft.warmup_ratio))
     # Accelerator.prepare 会将 scheduler 包装为 AcceleratedScheduler。
     # 在默认 split_batches=False 的多卡训练中，每次真实 optimizer step
     # 会推动底层 scheduler 前进 num_processes 次，因此这里需要按进程数放大
@@ -353,8 +275,8 @@ def main() -> None:
             '[sft/setup] '
             f"train_samples={len(train_dataset)} "
             f"valid_samples={len(valid_dataset)} "
-            f"per_device_train_batch_size={config['per_device_train_batch_size']} "
-            f"grad_accum={config['gradient_accumulation_steps']} "
+            f"per_device_train_batch_size={config.sft.per_device_train_batch_size} "
+            f"grad_accum={config.sft.gradient_accumulation_steps} "
             f"total_steps={total_steps} "
             f"warmup_steps={warmup_steps} "
             f"scheduler_total_steps={scheduler_total_steps} "
@@ -377,6 +299,7 @@ def main() -> None:
         global_step = resume_step_from_checkpoint(resume_checkpoint)
         optimizer_loaded = load_optimizer_state_if_available(optimizer, resume_checkpoint)
         scheduler_loaded = load_scheduler_state_if_available(scheduler, resume_checkpoint)
+        rng_loaded = load_rng_state_if_available(resume_checkpoint)
         scheduler_advanced_steps = 0
         if not scheduler_loaded:
             scheduler_advanced_steps = advance_scheduler_to_step(
@@ -390,11 +313,12 @@ def main() -> None:
                 f'step={global_step} '
                 f'optimizer_loaded={optimizer_loaded} '
                 f'scheduler_loaded={scheduler_loaded} '
+                f'rng_loaded={rng_loaded} '
                 f'scheduler_advanced_steps={scheduler_advanced_steps}',
                 flush=True,
             )
 
-    for epoch in range(config['num_train_epochs']):
+    for epoch in range(config.num_train_epochs):
         if global_step >= total_steps:
             break
         model.train()
@@ -408,7 +332,7 @@ def main() -> None:
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
-                        model.parameters(), config['max_grad_norm']
+                        model.parameters(), config.optimizer.max_grad_norm
                     )
                 optimizer.step()
                 scheduler.step()
@@ -427,7 +351,7 @@ def main() -> None:
                         'total_steps': total_steps,
                     }
                     append_metric(output_dir, train_record)
-                    if global_step % config['logging_steps'] == 0 or global_step == 1 or global_step == total_steps:
+                    if global_step % config.logging.logging_steps == 0 or global_step == 1 or global_step == total_steps:
                         print(
                             '[sft/train] '
                             f"step={global_step}/{total_steps} "
@@ -435,13 +359,13 @@ def main() -> None:
                             f"lr={current_lr:.6e}",
                             flush=True,
                         )
-                if global_step % config['eval_steps'] == 0:
+                if global_step % config.logging.eval_steps == 0:
                     metrics = evaluate(
                         model,
                         processor,
                         valid_loader,
                         accelerator,
-                        max_new_tokens=config['max_new_tokens_eval'],
+                        max_new_tokens=config.sft.max_new_tokens_eval,
                         max_batches=8,
                     )
                     if accelerator.is_main_process:
@@ -463,7 +387,7 @@ def main() -> None:
                             flush=True,
                         )
                 if (
-                    global_step % config['save_steps'] == 0
+                    global_step % config.logging.save_steps == 0
                     and accelerator.is_main_process
                 ):
                     save_checkpoint(
@@ -473,6 +397,7 @@ def main() -> None:
                         scheduler,
                         output_dir,
                         global_step,
+                        config.logging.save_total_limit,
                     )
                 if global_step >= total_steps:
                     break
@@ -485,7 +410,7 @@ def main() -> None:
         processor,
         valid_loader,
         accelerator,
-        max_new_tokens=config['max_new_tokens_eval'],
+        max_new_tokens=config.sft.max_new_tokens_eval,
     )
     if accelerator.is_main_process:
         test_output = write_test_results_from_loader(
@@ -493,7 +418,7 @@ def main() -> None:
             processor=processor,
             loader=test_loader,
             accelerator=accelerator,
-            max_new_tokens=config['max_new_tokens_eval'],
+            max_new_tokens=config.sft.max_new_tokens_eval,
             output_dir=output_dir,
         )
         append_metric(
@@ -501,7 +426,7 @@ def main() -> None:
             {
                 'phase': 'eval',
                 'step': global_step,
-                'epoch': config['num_train_epochs'] - 1,
+                'epoch': config.num_train_epochs - 1,
                 'eval_loss': float(final_metrics['eval_loss']),
                 'eval_exact_match': float(final_metrics['eval_exact_match']),
                 'total_steps': total_steps,
@@ -520,6 +445,7 @@ def main() -> None:
             scheduler,
             output_dir,
             global_step,
+            config.logging.save_total_limit,
         )
         dump_json(
             {

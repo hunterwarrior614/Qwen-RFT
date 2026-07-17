@@ -65,3 +65,4 @@ def resolve_lora_target_modules(model, target_regex: str) -> list[str]:
     if not matched:
         raise ValueError(f'No LoRA target modules matched regex: {target_regex}')
     return matched
+

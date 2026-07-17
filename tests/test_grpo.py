@@ -1,6 +1,6 @@
 import torch
 
-from src.qwen_vl_rl.grpo import compute_group_advantages
+from qwen_vl_rl.algorithms.grpo import compute_group_advantages
 
 
 def test_compute_group_advantages_centers_rewards_per_prompt():

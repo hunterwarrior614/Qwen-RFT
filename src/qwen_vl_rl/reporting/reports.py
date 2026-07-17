@@ -7,8 +7,8 @@ from typing import Any
 
 import torch
 
-from .answering import extract_choice_letter
-from .utils import extract_first_image_uri, move_tensors_to_device
+from ..algorithms.answering import extract_choice_letter
+from ..utils import extract_first_image_uri, move_tensors_to_device
 
 
 @torch.no_grad()
@@ -298,3 +298,4 @@ def _render_optional_prompt(record: dict[str, Any]) -> str:
       <summary class="label">Prompt</summary>
       <pre>{html.escape(prompt)}</pre>
     </details>'''
+

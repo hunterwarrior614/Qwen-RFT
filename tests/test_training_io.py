@@ -1,24 +1,27 @@
 import json
+import random
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 
-from src.qwen_vl_rl.training_io import (
+from qwen_vl_rl.training.io import (
     advance_scheduler_to_step,
     append_metric,
     checkpoint_step,
     estimate_total_training_steps,
     find_latest_checkpoint,
     load_optimizer_state_if_available,
+    load_rng_state_if_available,
     load_scheduler_state_if_available,
     load_training_state,
     prepare_checkpoint_dir,
+    prune_old_checkpoints,
     resolve_resume_checkpoint,
     resume_step_from_checkpoint,
     save_optimizer_and_training_state,
 )
-from src.qwen_vl_rl.utils import resolve_config_paths_in_dict, resolve_object_paths
+from qwen_vl_rl.utils import resolve_config_paths_in_dict, resolve_object_paths
 
 
 def test_append_metric_appends_jsonl_record(tmp_path: Path):
@@ -50,6 +53,7 @@ def test_prepare_checkpoint_dir_and_save_training_state(tmp_path: Path):
     assert checkpoint_dir.exists()
     assert (checkpoint_dir / 'optimizer.pt').exists()
     assert (checkpoint_dir / 'scheduler.pt').exists()
+    assert (checkpoint_dir / 'rng_state.pt').exists()
     assert json.loads((checkpoint_dir / 'training_state.json').read_text(encoding='utf-8')) == {
         'step': 3,
         'algorithm': 'ppo',
@@ -123,6 +127,39 @@ def test_load_optimizer_and_scheduler_state_if_available(tmp_path: Path):
     assert load_optimizer_state_if_available(target_optimizer, checkpoint_dir)
     assert load_scheduler_state_if_available(target_scheduler, checkpoint_dir)
     assert target_scheduler.last_epoch == source_scheduler.last_epoch
+
+
+def test_rng_state_can_be_restored(tmp_path: Path):
+    checkpoint_dir = prepare_checkpoint_dir(tmp_path, step=2)
+    optimizer = torch.optim.Adam([torch.nn.Parameter(torch.tensor(1.0))], lr=0.1)
+    random.seed(123)
+    torch.manual_seed(123)
+    save_optimizer_and_training_state(optimizer, checkpoint_dir, {'step': 2})
+
+    expected_python = random.random()
+    expected_torch = torch.rand(1)
+    random.seed(999)
+    torch.manual_seed(999)
+
+    assert load_rng_state_if_available(checkpoint_dir)
+    assert random.random() == expected_python
+    assert torch.equal(torch.rand(1), expected_torch)
+
+
+def test_prune_old_checkpoints_keeps_latest_steps(tmp_path: Path):
+    for step in (2, 10, 7, 20):
+        prepare_checkpoint_dir(tmp_path, step)
+    unrelated = tmp_path / 'checkpoint-draft'
+    unrelated.mkdir()
+
+    removed = prune_old_checkpoints(tmp_path, save_total_limit=2)
+
+    assert {path.name for path in removed} == {'checkpoint-2', 'checkpoint-7'}
+    assert {path.name for path in tmp_path.iterdir()} == {
+        'checkpoint-10',
+        'checkpoint-20',
+        'checkpoint-draft',
+    }
 
 
 def test_advance_scheduler_to_step_fast_forwards_when_state_file_is_missing():

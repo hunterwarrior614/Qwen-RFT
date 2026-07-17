@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 @dataclass
@@ -67,6 +64,15 @@ class OptimizerConfig:
     adam_beta2: float = 0.95
     adam_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
+
+
+@dataclass
+class SFTConfig:
+    per_device_train_batch_size: int = 2
+    per_device_eval_batch_size: int = 2
+    gradient_accumulation_steps: int = 1
+    warmup_ratio: float = 0.03
+    max_new_tokens_eval: int = 8
 
 
 @dataclass
@@ -143,6 +149,25 @@ class GRPOTrainConfig:
         return _to_plain_dict(self)
 
 
+@dataclass
+class SFTTrainConfig:
+    seed: int = 42
+    num_train_epochs: int = 1
+    data: DataConfig = field(default_factory=DataConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    lora: LoRAConfig = field(default_factory=LoRAConfig)
+    optimizer: OptimizerConfig = field(
+        default_factory=lambda: OptimizerConfig(learning_rate=2e-4, adam_beta2=0.999)
+    )
+    sft: SFTConfig = field(default_factory=SFTConfig)
+    logging: LoggingConfig = field(
+        default_factory=lambda: LoggingConfig(output_dir='outputs/sft/default')
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return _to_plain_dict(self)
+
+
 def _to_plain_dict(value: Any) -> Any:
     if is_dataclass(value):
         return {key: _to_plain_dict(item) for key, item in asdict(value).items()}
@@ -152,34 +177,3 @@ def _to_plain_dict(value: Any) -> Any:
         return [_to_plain_dict(item) for item in value]
     return value
 
-# 递归地将字典中的键值对更新到 dataclass 实例的对应字段上。
-# 如果某个字段本身也是一个 dataclass，且字典中对应值是嵌套字典，则继续递归更新该子 dataclass。
-def _update_dataclass(instance: Any, updates: dict[str, Any]) -> Any:
-    for key, value in updates.items():
-        current = getattr(instance, key)
-        if is_dataclass(current) and isinstance(value, dict):
-            _update_dataclass(current, value)
-        else:
-            setattr(instance, key, value)
-    return instance
-
-
-def load_config(config_path: str | Path) -> PPOTrainConfig:
-    path = Path(config_path)
-    payload = yaml.safe_load(path.read_text(encoding='utf-8'))
-    config = PPOTrainConfig(
-        data=DataConfig(train_file=''),
-        model=ModelConfig(base_model_name_or_path=''),
-    )
-    return _update_dataclass(config, payload or {})
-
-
-def load_grpo_config(config_path: str | Path) -> GRPOTrainConfig:
-    path = Path(config_path)
-    payload = yaml.safe_load(path.read_text(encoding='utf-8'))
-    config = GRPOTrainConfig(
-        data=DataConfig(train_file=''),
-        model=ModelConfig(base_model_name_or_path=''),
-        logging=LoggingConfig(output_dir='outputs/grpo/default'),
-    )
-    return _update_dataclass(config, payload or {})

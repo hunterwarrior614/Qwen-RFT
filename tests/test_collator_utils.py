@@ -1,9 +1,10 @@
-from types import SimpleNamespace
 
-from src.qwen_vl_rl.collator_utils import (
+import pytest
+
+from qwen_vl_rl.data.collators import (
+    build_generation_prompt_texts,
     build_processor_inputs,
     build_processor_inputs_with_padding_side,
-    build_generation_prompt_texts,
     collect_prompt_metadata,
     decode_prompt_images,
     prepare_tokenizer_for_padding,
@@ -108,6 +109,27 @@ def test_decode_prompt_images_returns_one_image_per_sample():
 
     assert len(images) == 1
     assert images[0].size == (1, 1)
+
+
+@pytest.mark.parametrize('image_count', [0, 2])
+def test_decode_prompt_images_rejects_non_single_image_samples(image_count):
+    image_item = {
+        'type': 'image',
+        'image': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+y3YsAAAAASUVORK5CYII=',
+    }
+    batch = [
+        {
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [image_item.copy() for _ in range(image_count)],
+                }
+            ]
+        }
+    ]
+
+    with pytest.raises(ValueError, match='exactly one image'):
+        decode_prompt_images(batch)
 
 
 def test_build_processor_inputs_forwards_expected_arguments():

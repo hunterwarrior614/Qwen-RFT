@@ -5,17 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
-import sys
-from typing import Iterable
 
 import pyarrow.parquet as pq
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from qwen_vl_rl.algorithms.answering import extract_choice_letter as extract_choice_letter_from_text
 
-from src.qwen_vl_rl.answering import extract_choice_letter as extract_choice_letter_from_text
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_OUTPUT_DIR = Path("data")
 DEFAULT_INPUT_PATH = Path("../Thyme-SFT/data/wo_thinking_thyme_single_round-00000-of-00146.parquet")
@@ -72,8 +69,8 @@ def parse_args() -> argparse.Namespace:
         choices=("first", "all", "none"),
         default="first",
         help=(
-            "How many source images to keep. For direct Qwen-VL VQA training, "
-            "'first' is usually the right choice."
+            "How many source images to keep. Current training collators require "
+            "'first'; 'all' and 'none' are export-only modes for external consumers."
         ),
     )
     parser.add_argument(
@@ -447,3 +444,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

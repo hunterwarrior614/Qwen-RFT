@@ -5,14 +5,14 @@ from typing import Any
 
 import torch
 
-from .modeling_ppo import categorical_entropy_from_logits, gather_log_probs
+from ..models.policy import categorical_entropy_from_logits, gather_log_probs
 from .ppo import (
+    _normalize_eos_ids,
     build_response_attention_mask,
     decode_response_texts,
     masked_mean,
     move_batch_to_device,
     slice_visual_features,
-    _normalize_eos_ids,
 )
 from .reward import score_choice_predictions
 
@@ -30,6 +30,7 @@ class GRPORolloutBatch:
     scores: torch.Tensor
     response_texts: list[str]
     pred_letters: list[str | None]
+    strict_pred_letters: list[str | None]
     answer_keys: list[str]
     sample_ids: list[int]
     prompt_padded_length: int
@@ -49,7 +50,6 @@ def generate_grpo_rollout_batch(
     eval_mode: bool = False,
 ) -> GRPORolloutBatch:
     prompt_inputs = move_batch_to_device(batch['prompt_inputs'], accelerator.device)
-    prompt_attention_mask = prompt_inputs['attention_mask']
     prompt_padded_length = prompt_inputs['input_ids'].shape[1]
     group_size = 1 if eval_mode else grpo_config.num_generations
     original_batch_size = prompt_inputs['input_ids'].shape[0]
@@ -157,6 +157,7 @@ def generate_grpo_rollout_batch(
         scores=scores.detach().cpu(),
         response_texts=response_texts,
         pred_letters=reward_output['pred_letters'],
+        strict_pred_letters=reward_output['strict_pred_letters'],
         answer_keys=answer_keys,
         sample_ids=[
             sample_id
@@ -294,3 +295,4 @@ def _repeat_prompt_inputs(prompt_inputs: dict[str, Any], group_size: int) -> dic
         else:
             repeated[key] = value
     return repeated
+

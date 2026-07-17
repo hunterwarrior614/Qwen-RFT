@@ -1,14 +1,18 @@
 from types import SimpleNamespace
 
-import torch
 import pytest
+import torch
 
-from scripts.train.train_grpo_qwen_vl_lora import (
+from qwen_vl_rl.cli.train_grpo import (
     run_evaluation as run_grpo_evaluation,
+)
+from qwen_vl_rl.cli.train_grpo import (
     summarize_rollout as summarize_grpo_rollout,
 )
-from scripts.train.train_ppo_qwen_vl_lora import (
+from qwen_vl_rl.cli.train_ppo import (
     run_evaluation as run_ppo_evaluation,
+)
+from qwen_vl_rl.cli.train_ppo import (
     summarize_rollout as summarize_ppo_rollout,
 )
 
@@ -41,13 +45,23 @@ def test_grpo_summary_separates_reward_mean_from_accuracy():
     assert metrics['valid_option_rate'] == 2 / 3
 
 
+def test_summary_uses_strict_predictions_when_rollout_provides_them():
+    rollout = _build_rollout()
+    rollout.strict_pred_letters = ['A', None, None]
+
+    metrics = summarize_ppo_rollout(rollout)
+
+    assert metrics['accuracy'] == 1 / 3
+    assert metrics['valid_option_rate'] == 1 / 3
+
+
 def test_ppo_evaluation_uses_total_count_as_denominator(monkeypatch):
     rollout = _build_rollout()
 
     def fake_generate_rollout_batch(**kwargs):
         return rollout
 
-    import scripts.train.train_ppo_qwen_vl_lora as ppo_train
+    import qwen_vl_rl.cli.train_ppo as ppo_train
 
     monkeypatch.setattr(ppo_train, 'generate_rollout_batch', fake_generate_rollout_batch)
 
@@ -71,7 +85,7 @@ def test_grpo_evaluation_uses_total_count_as_denominator(monkeypatch):
     def fake_generate_grpo_rollout_batch(**kwargs):
         return rollout
 
-    import scripts.train.train_grpo_qwen_vl_lora as grpo_train
+    import qwen_vl_rl.cli.train_grpo as grpo_train
 
     monkeypatch.setattr(grpo_train, 'generate_grpo_rollout_batch', fake_generate_grpo_rollout_batch)
 

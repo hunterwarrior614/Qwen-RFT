@@ -2,7 +2,7 @@ import json
 
 import torch
 
-from src.qwen_vl_rl.reports import (
+from qwen_vl_rl.reporting.reports import (
     _extract_target,
     extract_first_image_uri,
     generate_prediction_records,

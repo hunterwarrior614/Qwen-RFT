@@ -5,9 +5,9 @@ from typing import Any
 
 import torch
 
-from .modeling_ppo import compute_policy_outputs_from_model_outputs, gather_log_probs
+from ..models.policy import compute_policy_outputs_from_model_outputs, gather_log_probs
+from ..utils import move_tensors_to_device
 from .reward import score_choice_predictions
-from .utils import move_tensors_to_device
 
 
 # 封装一次 PPO rollout 生成的所有中间数据
@@ -71,6 +71,9 @@ class RolloutBatch:
 
     # 从 response_texts 中提取出的选项字母（如 "A"、"B"），若无法解析则为 None
     pred_letters: list[str | None]
+
+    # 严格遵守 <answer>...</answer> 格式的预测，供准确率指标使用。
+    strict_pred_letters: list[str | None]
 
     # 每个样本的正确答案字母（来自数据集），即 pred_letters 的期望结果
     answer_keys: list[str]
@@ -220,6 +223,7 @@ def generate_rollout_batch(
         scores=scores.detach().cpu(),
         response_texts=response_texts,
         pred_letters=reward_output['pred_letters'],
+        strict_pred_letters=reward_output['strict_pred_letters'],
         answer_keys=batch['answer_keys'],
         sample_ids=batch['sample_ids'],
         prompt_padded_length=prompt_padded_length,
@@ -394,3 +398,4 @@ def _normalize_eos_ids(eos_token_id: int | list[int]) -> set[int]:
     if isinstance(eos_token_id, list):
         return set(int(item) for item in eos_token_id)
     return {int(eos_token_id)}
+
