@@ -14,7 +14,9 @@ from .io import append_metric, log_metrics
 class RLTrainingHooks:
     """PPO/GRPO 注入公共训练循环的算法操作。"""
 
-    generate_rollout: Callable[[dict[str, Any]], Any]
+    # Callable 是 Python 类型标注，用来表示“可以被调用的对象”，下面都表示函数
+    # Callable[[参数类型列表], 返回值类型]
+    generate_rollout: Callable[[dict[str, Any]], Any]   
     build_minibatch: Callable[[Any, torch.Tensor], dict[str, torch.Tensor]]
     compute_losses: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
     summarize_rollout: Callable[[Any], dict[str, float]]
@@ -127,4 +129,3 @@ def run_rl_training_loop(
                 hooks.save_checkpoint(global_step)
 
     return global_step
-

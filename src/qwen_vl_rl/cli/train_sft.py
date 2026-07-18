@@ -327,7 +327,7 @@ def main() -> None:
                 break
             with accelerator.accumulate(model):
                 model_inputs = move_tensors_to_device(batch['model_inputs'], accelerator.device)
-                outputs = model(**model_inputs)
+                outputs = model(**model_inputs) # 解包字典，作为关键字参数
                 loss = outputs.loss
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
